@@ -1,3 +1,6 @@
+from database.db import buscar_colunas_tabela, e_postgres, executar
+
+
 COLUNAS_ADICIONAIS = {
     "origem": "TEXT",
     "confianca": "REAL",
@@ -15,24 +18,45 @@ COLUNAS_ADICIONAIS = {
 def criar_tabela(conn):
     cursor = conn.cursor()
 
-    cursor.execute(
-        """
+    definicao_id = "BIGSERIAL PRIMARY KEY" if e_postgres(conn) else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    blob_type = "BYTEA" if e_postgres(conn) else "BLOB"
+
+    executar(
+        conn,
+        cursor,
+        f"""
         CREATE TABLE IF NOT EXISTS transacoes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {definicao_id},
             data TEXT,
             descricao TEXT,
             valor REAL,
             categoria TEXT,
             status TEXT
         )
-        """
+        """,
     )
 
-    cursor.execute("PRAGMA table_info(transacoes)")
-    colunas_existentes = {coluna[1] for coluna in cursor.fetchall()}
+    executar(
+        conn,
+        cursor,
+        f"""
+        CREATE TABLE IF NOT EXISTS artefatos_sistema (
+            chave TEXT PRIMARY KEY,
+            payload {blob_type} NOT NULL,
+            metadata TEXT,
+            atualizado_em TEXT
+        )
+        """,
+    )
+
+    colunas_existentes = buscar_colunas_tabela(conn, "transacoes")
 
     for coluna, tipo in COLUNAS_ADICIONAIS.items():
         if coluna not in colunas_existentes:
-            cursor.execute(f"ALTER TABLE transacoes ADD COLUMN {coluna} {tipo}")
+            executar(
+                conn,
+                cursor,
+                f"ALTER TABLE transacoes ADD COLUMN {coluna} {tipo}",
+            )
 
     conn.commit()

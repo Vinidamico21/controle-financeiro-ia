@@ -3,6 +3,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+from database.system_store import carregar_artefato, remover_artefato, salvar_artefato
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
@@ -16,6 +17,7 @@ CONFIANCA_MINIMA_PADRAO = 0.55
 CONFIANCA_MINIMA_TIPO = 0.65
 MINIMO_AMOSTRAS_TREINO = 8
 CAMINHO_MODELO = Path(__file__).resolve().parent.parent / "data" / "modelo_ml.pkl"
+CHAVE_ARTEFATO_MODELO = "modelo_ml_principal"
 
 
 def criar_pipeline():
@@ -67,6 +69,12 @@ def filtrar_amostras_tipo(base_treinamento):
 
 
 def salvar_modelo(payload):
+    salvar_artefato(
+        CHAVE_ARTEFATO_MODELO,
+        pickle.dumps(payload),
+        metadata={"fonte": "pickle"},
+    )
+
     CAMINHO_MODELO.parent.mkdir(parents=True, exist_ok=True)
 
     with CAMINHO_MODELO.open("wb") as arquivo_modelo:
@@ -74,11 +82,30 @@ def salvar_modelo(payload):
 
 
 def carregar_modelo():
+    artefato = carregar_artefato(CHAVE_ARTEFATO_MODELO)
+
+    if artefato and artefato.get("payload"):
+        return pickle.loads(artefato["payload"])
+
     if not CAMINHO_MODELO.exists():
         return None
 
     with CAMINHO_MODELO.open("rb") as arquivo_modelo:
-        return pickle.load(arquivo_modelo)
+        payload = pickle.load(arquivo_modelo)
+
+    salvar_artefato(
+        CHAVE_ARTEFATO_MODELO,
+        pickle.dumps(payload),
+        metadata={"fonte": "migrado_do_arquivo_local"},
+    )
+    return payload
+
+
+def resetar_modelo():
+    remover_artefato(CHAVE_ARTEFATO_MODELO)
+
+    if CAMINHO_MODELO.exists():
+        CAMINHO_MODELO.unlink()
 
 
 def extrair_modelo(payload, nome_modelo):

@@ -10,6 +10,7 @@ controle_financeiro/data/
 controle_financeiro/*.log
 controle_financeiro/streamlit.out.log
 controle_financeiro/streamlit.err.log
+.streamlit/secrets.toml
 
 .DS_Store
 Thumbs.db

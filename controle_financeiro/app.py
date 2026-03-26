@@ -1,14 +1,14 @@
 import pandas as pd
 import streamlit as st
 
-from database.db import conectar
+from database.db import conectar, descrever_backend
 from database.models import criar_tabela
 from database.repository import (
     buscar_base_treinamento,
+    limpar_transacoes,
     buscar_transacoes,
     salvar_transacoes,
 )
-from reports.report import gerar_resumo
 from services.categorizer import (
     CATEGORIA_NAO_CLASSIFICADA,
     categorias_disponiveis,
@@ -20,6 +20,7 @@ from services.ml_classifier import (
     obter_status_modelo,
     prever_categorias,
     prever_tipos,
+    resetar_modelo,
     treinar_e_salvar_modelo,
 )
 from services.parser import (
@@ -35,6 +36,8 @@ st.set_page_config(page_title="Controle Financeiro IA", layout="wide")
 
 conn = conectar()
 criar_tabela(conn)
+st.session_state.setdefault("confirmar_reset_base", False)
+st.session_state.setdefault("confirmar_reset_ia", False)
 
 
 def formatar_moeda(valor):
@@ -52,6 +55,13 @@ def formatar_confianca(valor):
         return "-"
 
     return f"{float(valor):.0%}"
+
+
+def formatar_data(valor):
+    if valor is None or pd.isna(valor):
+        return "-"
+
+    return pd.to_datetime(valor).strftime("%d/%m/%Y")
 
 
 def carregar_status_modelo(force_retrain=False):
@@ -115,7 +125,10 @@ def classificar_transacoes(transacoes):
     for indice, transacao in enumerate(transacoes):
         previsao_categoria = previsoes_categoria[indice] if previsoes_categoria else None
         previsao_tipo = previsoes_tipo[indice] if previsoes_tipo else None
-        categoria_regra = categorizar_por_regras(transacao["descricao"])
+        categoria_regra = categorizar_por_regras(
+            transacao["descricao"],
+            transacao.get("tipo_movimentacao"),
+        )
 
         categoria = CATEGORIA_NAO_CLASSIFICADA
         categoria_prevista = CATEGORIA_NAO_CLASSIFICADA
@@ -183,6 +196,7 @@ def classificar_transacoes(transacoes):
 
 def exibir_sidebar(status_modelo):
     st.sidebar.header("Motor de IA")
+    st.sidebar.caption(f"Persistencia ativa: {descrever_backend()}")
 
     if status_modelo.get("modelo_disponivel"):
         st.sidebar.success("Modelo de categoria treinado.")
@@ -224,6 +238,9 @@ def exibir_sidebar(status_modelo):
 def aplicar_estilo_preview(df_preview):
     formatos = {}
 
+    if "data" in df_preview.columns:
+        formatos["data"] = formatar_data
+
     if "valor_original" in df_preview.columns:
         formatos["valor_original"] = formatar_moeda
 
@@ -250,20 +267,6 @@ def aplicar_estilo_preview(df_preview):
 
     return estilo
 
-
-def exibir_metricas_fluxo(df_transacoes):
-    entradas = df_transacoes[df_transacoes["valor"] > 0]["valor"].sum()
-    saidas = df_transacoes[df_transacoes["valor"] < 0]["valor"].sum()
-    saldo = entradas + saidas
-    revisoes = int(df_transacoes["precisa_revisao"].sum())
-
-    coluna1, coluna2, coluna3, coluna4 = st.columns(4)
-    coluna1.metric("Entradas", formatar_moeda(entradas))
-    coluna2.metric("Saidas", formatar_moeda(saidas))
-    coluna3.metric("Saldo", formatar_moeda(saldo))
-    coluna4.metric("Itens para revisar", revisoes)
-
-
 status_modelo, base_treinamento = carregar_status_modelo()
 
 if "mensagem_sucesso" in st.session_state:
@@ -274,12 +277,58 @@ st.caption(
     "Agora voce pode revisar categoria, Entrada/Saida e valor antes de salvar. "
     "Cada ajuste ajuda a IA a aprender melhor com o seu historico real."
 )
+st.info(
+    "Os totalizadores e filtros gerenciais agora ficam na pagina "
+    "'Totalizadores Gerenciais' no menu lateral."
+)
 
 exibir_sidebar(status_modelo)
 
 if st.sidebar.button("Retreinar modelo com historico"):
     status_modelo, base_treinamento = carregar_status_modelo(force_retrain=True)
     st.sidebar.success("Modelo atualizado com o historico mais recente.")
+
+st.sidebar.divider()
+st.sidebar.subheader("Reset da plataforma")
+st.sidebar.caption("Escolha separadamente entre limpar a base ou resetar a IA.")
+
+if st.sidebar.button("Limpar base de dados", type="secondary"):
+    st.session_state["confirmar_reset_base"] = True
+    st.session_state["confirmar_reset_ia"] = False
+
+if st.session_state.get("confirmar_reset_base"):
+    st.sidebar.warning("Isso apaga todas as transacoes salvas no banco.")
+
+    if st.sidebar.button("Confirmar limpeza da base", type="primary"):
+        limpar_transacoes(conn)
+        st.session_state["confirmar_reset_base"] = False
+        st.session_state["mensagem_sucesso"] = (
+            "Base de dados limpa com sucesso."
+        )
+        st.rerun()
+
+    if st.sidebar.button("Cancelar limpeza da base"):
+        st.session_state["confirmar_reset_base"] = False
+        st.rerun()
+
+if st.sidebar.button("Resetar apenas a IA", type="secondary"):
+    st.session_state["confirmar_reset_ia"] = True
+    st.session_state["confirmar_reset_base"] = False
+
+if st.session_state.get("confirmar_reset_ia"):
+    st.sidebar.warning("Isso apaga somente o modelo treinado da IA.")
+
+    if st.sidebar.button("Confirmar reset da IA", type="primary"):
+        resetar_modelo()
+        st.session_state["confirmar_reset_ia"] = False
+        st.session_state["mensagem_sucesso"] = (
+            "Modelo da IA resetado com sucesso."
+        )
+        st.rerun()
+
+    if st.sidebar.button("Cancelar reset da IA"):
+        st.session_state["confirmar_reset_ia"] = False
+        st.rerun()
 
 arquivo = st.file_uploader("Envie seu extrato PDF", type="pdf")
 
@@ -294,8 +343,6 @@ if arquivo:
         categorias_historicas = [item["categoria"] for item in base_treinamento]
         opcoes_categoria = categorias_disponiveis(categorias_historicas)
 
-        exibir_metricas_fluxo(df_classificado)
-
         st.subheader("Revisao inteligente das transacoes")
         st.caption(
             "Edite a categoria, o tipo de movimentacao e o valor quando necessario. "
@@ -305,6 +352,7 @@ if arquivo:
 
         df_editor = df_classificado[
             [
+                "data",
                 "descricao",
                 "tipo_movimentacao",
                 "categoria",
@@ -314,10 +362,12 @@ if arquivo:
                 "alerta_revisao",
             ]
         ].copy()
+        df_editor["data"] = pd.to_datetime(df_editor["data"], errors="coerce").dt.date
         df_editor["valor_editavel"] = df_classificado["valor"].abs()
 
         df_editor = df_editor[
             [
+                "data",
                 "descricao",
                 "tipo_movimentacao",
                 "valor_editavel",
@@ -334,6 +384,7 @@ if arquivo:
             hide_index=True,
             use_container_width=True,
             column_config={
+                "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
                 "descricao": st.column_config.TextColumn("Descricao", width="large"),
                 "tipo_movimentacao": st.column_config.SelectboxColumn(
                     "Tipo",
@@ -366,7 +417,14 @@ if arquivo:
                     width="large",
                 ),
             },
-            disabled=["descricao", "origem", "confianca", "confianca_tipo", "alerta_revisao"],
+            disabled=[
+                "data",
+                "descricao",
+                "origem",
+                "confianca",
+                "confianca_tipo",
+                "alerta_revisao",
+            ],
         )
 
         df_para_salvar = df_classificado.copy()
@@ -425,6 +483,7 @@ if arquivo:
 
         df_preview = df_para_salvar[
             [
+                "data",
                 "descricao",
                 "tipo_movimentacao",
                 "valor_original",
@@ -449,13 +508,6 @@ if arquivo:
         else:
             st.dataframe(pendentes, hide_index=True, use_container_width=True)
 
-        resumo = gerar_resumo(df_para_salvar[["categoria", "valor"]])
-        st.subheader("Resumo financeiro")
-        st.dataframe(resumo, hide_index=True, use_container_width=True)
-
-        if not resumo.empty:
-            st.bar_chart(resumo.set_index("categoria")["valor"])
-
         if st.button("Salvar transacoes e re-treinar IA", type="primary"):
             salvar_transacoes(conn, df_para_salvar.to_dict("records"))
             status_modelo = treinar_e_salvar_modelo(buscar_base_treinamento(conn))
@@ -470,8 +522,10 @@ historico = buscar_transacoes(conn)
 
 if historico:
     df_historico = pd.DataFrame(historico)
+    st.caption("Tabela detalhada do historico salvo recente")
     df_historico_exibicao = df_historico[
         [
+            "data",
             "descricao",
             "tipo_movimentacao",
             "valor_corrigido",

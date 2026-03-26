@@ -1,3 +1,4 @@
+from database.db import e_postgres, executar
 from services.categorizer import CATEGORIA_NAO_CLASSIFICADA
 
 
@@ -26,9 +27,12 @@ def salvar_transacoes(conn, transacoes):
         else:
             status = "AUTO"
 
-        cursor.execute(
+        executar(
+            conn,
+            cursor,
             """
             INSERT INTO transacoes (
+                data,
                 descricao,
                 valor,
                 categoria,
@@ -44,9 +48,10 @@ def salvar_transacoes(conn, transacoes):
                 revisado_usuario,
                 alerta_revisao
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                transacao.get("data"),
                 transacao["descricao"],
                 valor_final,
                 transacao["categoria"],
@@ -69,10 +74,13 @@ def salvar_transacoes(conn, transacoes):
 
 def buscar_transacoes(conn):
     cursor = conn.cursor()
-    cursor.execute(
+    executar(
+        conn,
+        cursor,
         """
         SELECT
             id,
+            data,
             descricao,
             valor,
             categoria,
@@ -88,11 +96,12 @@ def buscar_transacoes(conn):
             revisado_usuario,
             alerta_revisao
         FROM transacoes
-        ORDER BY id DESC
+        ORDER BY COALESCE(data, '') DESC, id DESC
         """
     )
     colunas = [
         "id",
+        "data",
         "descricao",
         "valor",
         "categoria",
@@ -113,7 +122,9 @@ def buscar_transacoes(conn):
 
 def buscar_base_treinamento(conn):
     cursor = conn.cursor()
-    cursor.execute(
+    executar(
+        conn,
+        cursor,
         """
         SELECT descricao, categoria, tipo_movimentacao
         FROM transacoes
@@ -124,3 +135,15 @@ def buscar_base_treinamento(conn):
     )
     colunas = ["descricao", "categoria", "tipo_movimentacao"]
     return [dict(zip(colunas, linha)) for linha in cursor.fetchall()]
+
+
+def limpar_transacoes(conn):
+    cursor = conn.cursor()
+
+    if e_postgres(conn):
+        executar(conn, cursor, "TRUNCATE TABLE transacoes RESTART IDENTITY")
+    else:
+        executar(conn, cursor, "DELETE FROM transacoes")
+        executar(conn, cursor, "DELETE FROM sqlite_sequence WHERE name = ?", ("transacoes",))
+
+    conn.commit()

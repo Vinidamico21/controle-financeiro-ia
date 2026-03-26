@@ -2,3 +2,4 @@ streamlit
 pandas
 pdfplumber
 scikit-learn
+psycopg[binary]
